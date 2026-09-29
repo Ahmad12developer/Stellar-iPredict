@@ -17,7 +17,7 @@ for the full design.
 
 ## Stack
 
-- **Runtime:** Node.js 20+, TypeScript
+- **Runtime:** Node.js 22+, TypeScript
 - **HTTP:** Fastify
 - **DB:** PostgreSQL 16 (shared with the indexer)
 - **Cache:** Redis 7
@@ -336,3 +336,26 @@ git diff src/api/__snapshots__/openapi.spec.json   # review the contract change
 
 Commit the updated snapshot with the schema change, and call out breaking
 changes (removed paths/fields, tightened types) in the PR description.
+
+## OpenAPI response contracts
+
+Run from the repository root after `npm ci` and
+`npm run build --workspace=@ipredict/shared`:
+
+```bash
+npm run test:contract --workspace=ipredict-backend
+```
+
+The suite uses the production `buildServer` and generated OpenAPI 3.1 document.
+All 16 documented operations have a response validated with AJV 2020, including
+oracle authentication failures. Database queries and dependency probes use test
+doubles; route handlers, query modules, serialization, and error handling remain
+real. The route inventory assertion requires a new case whenever an operation is
+added. Existing frontend shape contracts remain in `test/frontend-contract.test.ts`.
+
+Every exercised response is compared recursively with its handler payload captured
+before serialization. Mutation tests add an undeclared field to market and bet rows
+and prove the preservation check fails when Fastify strips it. Additional helper
+tests cover nested references, missing fields, invalid types, nulls, and nested arrays.
+Validators are cached per immutable specification. These checks do not replace
+PostgreSQL/Redis integration tests or establish performance/memory guarantees.
