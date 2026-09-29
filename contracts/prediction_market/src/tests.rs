@@ -99,6 +99,72 @@ fn setup() -> TestSetup {
     }
 }
 
+
+pub fn check_invariant(t: &TestSetup) {
+    let contract_balance = t.xlm.balance(&t.market_id);
+    let acc_fees = t.client.get_accumulated_fees();
+    
+    let mut outstanding_stakes: i128 = 0;
+    let mut escrowed_bonds: i128 = 0;
+    
+    let market_count = t.client.get_market_count();
+    for id in 1..=market_count {
+        let market = t.client.get_market(&id);
+        
+        // Oracle bonds
+        if let Ok(Ok(submission)) = t.client.try_get_oracle_submission(&id) {
+            match submission.state {
+                OracleState::Finalized => {}
+                _ => {
+                    escrowed_bonds += submission.bond;
+                    escrowed_bonds += submission.challenger_bond;
+                }
+            }
+        }
+        
+        // Stakes
+        if market.cancelled {
+            if let Ok(Ok(bettors)) = t.client.try_get_market_bettors(&id) {
+                for bettor in bettors.into_iter() {
+                    outstanding_stakes += t.client.get_bet_gross(&id, &bettor);
+                }
+            }
+        } else if market.resolved {
+            let winning_side = if market.outcome { market.total_yes } else { market.total_no };
+            if winning_side > 0 {
+                let total_pool = market.total_yes + market.total_no;
+                if let Ok(Ok(bettors)) = t.client.try_get_market_bettors(&id) {
+                    for bettor in bettors.into_iter() {
+                        if let Ok(Ok(bet)) = t.client.try_get_bet(&id, &bettor) {
+                            if bet.is_yes == market.outcome && !bet.claimed {
+                                outstanding_stakes += (bet.amount * total_pool) / winning_side;
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            outstanding_stakes += market.total_yes + market.total_no;
+        }
+    }
+    
+    let accounted = outstanding_stakes + escrowed_bonds + acc_fees;
+    assert_eq!(
+        contract_balance,
+        accounted,
+        "Invariant violation! Balance: {}, Accounted: {} (Stakes: {}, Bonds: {}, Fees: {})",
+        contract_balance, accounted, outstanding_stakes, escrowed_bonds, acc_fees
+    );
+}
+
+
+impl Drop for TestSetup {
+    fn drop(&mut self) {
+        // Do not check invariant if we are already panicking (to avoid double panics)
+        check_invariant(self);
+    }
+}
+
 fn fund_user(t: &TestSetup, user: &Address, amount: i128) {
     t.xlm_admin.mint(user, &amount);
 }
@@ -1722,4 +1788,42 @@ fn test_finalize_releases_bond_on_cancelled_market() {
     let market = t.client.get_market(&m.id);
     assert!(market.cancelled);
     assert!(!market.resolved);
+}
+
+#[test]
+fn test_invariant_random_operations() {
+    let t = setup();
+    let users = [Address::generate(&t.env), Address::generate(&t.env), Address::generate(&t.env)];
+    for u in &users {
+        fund_user(&t, u, 10_000_0000000);
+    }
+    
+    // We don't have rand crate, so we use a simple linear congruential generator
+    let mut state: u64 = 12345;
+    let mut next_rand = || -> u64 {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        state
+    };
+    
+    let market_id = create_test_market(&t);
+    
+    for _ in 0..10 {
+        let op = next_rand() % 3;
+        let user_idx = (next_rand() % 3) as usize;
+        let amount = 100_0000000 + (next_rand() % 500_0000000) as i128;
+        let is_yes = (next_rand() % 2) == 0;
+        
+        match op {
+            0 => {
+                let _ = t.client.try_place_bet(&users[user_idx], &market_id, &is_yes, &amount);
+            },
+            1 => {
+                let _ = t.client.try_cancel_market(&t.admin, &market_id);
+            },
+            2 => {
+                let _ = t.client.try_resolve_market(&t.admin, &market_id, &is_yes);
+            },
+            _ => {}
+        }
+    }
 }

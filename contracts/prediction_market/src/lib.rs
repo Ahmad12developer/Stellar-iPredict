@@ -954,7 +954,7 @@ impl PredictionMarketContract {
     /// Read the optimistic-oracle submission for a market, if one exists.
     /// Returns `None` while the market is still in the `Open` (no submission)
     /// state. Used by the off-chain indexer/aggregator to track lifecycle.
-    pub fn get_submission(env: Env, market_id: u64) -> Option<Submission> {
+    pub fn get_submission(env: Env, market_id: u64) -> Option<OracleSubmission> {
         env.storage().persistent().get(&DataKey::Submission(market_id))
     }
 
