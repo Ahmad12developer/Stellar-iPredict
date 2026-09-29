@@ -50,6 +50,9 @@ describe("Integration: GET /api/markets (Filter, Sort, Pagination)", () => {
   // ── GET /api/markets Default List ──────────────────────────────────────────
   it("returns default paginated market list (page=1, limit=20, sort=newest, filter=all)", async () => {
     const queryMock = vi.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes("COUNT(*) OVER")) {
+        return { rows: mockMarkets.map((m) => ({ ...m, total_count: mockMarkets.length })) };
+      }
       if (sql.includes("COUNT")) {
         return { rows: [{ total: mockMarkets.length }] };
       }
@@ -78,6 +81,9 @@ describe("Integration: GET /api/markets (Filter, Sort, Pagination)", () => {
       const activeMarkets = mockMarkets.filter((m) => !m.resolved && !m.cancelled && Number(m.end_time) > Date.now() / 1000);
       const queryMock = vi.fn().mockImplementation(async (sql: string) => {
         expect(sql).toContain("resolved = false AND cancelled = false AND end_time >");
+        if (sql.includes("COUNT(*) OVER")) {
+          return { rows: activeMarkets.map((m) => ({ ...m, total_count: activeMarkets.length })) };
+        }
         if (sql.includes("COUNT")) {
           return { rows: [{ total: activeMarkets.length }] };
         }
@@ -99,6 +105,9 @@ describe("Integration: GET /api/markets (Filter, Sort, Pagination)", () => {
       const resolvedMarkets = mockMarkets.filter((m) => m.resolved);
       const queryMock = vi.fn().mockImplementation(async (sql: string) => {
         expect(sql).toContain("resolved = true");
+        if (sql.includes("COUNT(*) OVER")) {
+          return { rows: resolvedMarkets.map((m) => ({ ...m, total_count: resolvedMarkets.length })) };
+        }
         if (sql.includes("COUNT")) {
           return { rows: [{ total: resolvedMarkets.length }] };
         }
@@ -118,6 +127,9 @@ describe("Integration: GET /api/markets (Filter, Sort, Pagination)", () => {
     it("supports filtering by status=ended", async () => {
       const queryMock = vi.fn().mockImplementation(async (sql: string) => {
         expect(sql).toContain("resolved = false AND cancelled = false AND end_time <=");
+        if (sql.includes("COUNT(*) OVER")) {
+          return { rows: [{ ...mockMarkets[3], total_count: 1 }] };
+        }
         return sql.includes("COUNT") ? { rows: [{ total: 1 }] } : { rows: [mockMarkets[3]] };
       });
 
@@ -133,6 +145,9 @@ describe("Integration: GET /api/markets (Filter, Sort, Pagination)", () => {
     it("supports filtering by status=cancelled", async () => {
       const queryMock = vi.fn().mockImplementation(async (sql: string) => {
         expect(sql).toContain("cancelled = true");
+        if (sql.includes("COUNT(*) OVER")) {
+          return { rows: [{ ...mockMarkets[2], total_count: 1 }] };
+        }
         return sql.includes("COUNT") ? { rows: [{ total: 1 }] } : { rows: [mockMarkets[2]] };
       });
 
@@ -150,6 +165,9 @@ describe("Integration: GET /api/markets (Filter, Sort, Pagination)", () => {
       const queryMock = vi.fn().mockImplementation(async (sql: string, values?: unknown[]) => {
         expect(sql).toContain("category = $1");
         expect(values).toContain("Crypto");
+        if (sql.includes("COUNT(*) OVER")) {
+          return { rows: cryptoMarkets.map((m) => ({ ...m, total_count: cryptoMarkets.length })) };
+        }
         if (sql.includes("COUNT")) {
           return { rows: [{ total: cryptoMarkets.length }] };
         }
@@ -201,8 +219,9 @@ describe("Integration: GET /api/markets (Filter, Sort, Pagination)", () => {
   describe("Sorting", () => {
     it("supports sorting by newest", async () => {
       const queryMock = vi.fn().mockImplementation(async (sql: string) => {
-        if (!sql.includes("COUNT")) {
+        if (sql.includes("COUNT(*) OVER")) {
           expect(sql).toContain("ORDER BY created_at DESC");
+          return { rows: mockMarkets.map((m) => ({ ...m, total_count: mockMarkets.length })) };
         }
         return sql.includes("COUNT") ? { rows: [{ total: mockMarkets.length }] } : { rows: mockMarkets };
       });
@@ -218,8 +237,9 @@ describe("Integration: GET /api/markets (Filter, Sort, Pagination)", () => {
 
     it("supports sorting by volume", async () => {
       const queryMock = vi.fn().mockImplementation(async (sql: string) => {
-        if (!sql.includes("COUNT")) {
+        if (sql.includes("COUNT(*) OVER")) {
           expect(sql).toContain("ORDER BY (total_yes + total_no) DESC");
+          return { rows: mockMarkets.map((m) => ({ ...m, total_count: mockMarkets.length })) };
         }
         return sql.includes("COUNT") ? { rows: [{ total: mockMarkets.length }] } : { rows: mockMarkets };
       });
@@ -235,8 +255,9 @@ describe("Integration: GET /api/markets (Filter, Sort, Pagination)", () => {
 
     it("supports sorting by ending_soon", async () => {
       const queryMock = vi.fn().mockImplementation(async (sql: string) => {
-        if (!sql.includes("COUNT")) {
+        if (sql.includes("COUNT(*) OVER")) {
           expect(sql).toContain("ORDER BY end_time ASC");
+          return { rows: mockMarkets.map((m) => ({ ...m, total_count: mockMarkets.length })) };
         }
         return sql.includes("COUNT") ? { rows: [{ total: mockMarkets.length }] } : { rows: mockMarkets };
       });
@@ -252,8 +273,9 @@ describe("Integration: GET /api/markets (Filter, Sort, Pagination)", () => {
 
     it("supports sorting by bettors", async () => {
       const queryMock = vi.fn().mockImplementation(async (sql: string) => {
-        if (!sql.includes("COUNT")) {
+        if (sql.includes("COUNT(*) OVER")) {
           expect(sql).toContain("ORDER BY bet_count DESC");
+          return { rows: mockMarkets.map((m) => ({ ...m, total_count: mockMarkets.length })) };
         }
         return sql.includes("COUNT") ? { rows: [{ total: mockMarkets.length }] } : { rows: mockMarkets };
       });
@@ -272,9 +294,12 @@ describe("Integration: GET /api/markets (Filter, Sort, Pagination)", () => {
   describe("Pagination", () => {
     it("handles page and limit pagination parameters", async () => {
       const queryMock = vi.fn().mockImplementation(async (sql: string, values?: unknown[]) => {
-        if (!sql.includes("COUNT")) {
+        if (sql.includes("COUNT(*) OVER")) {
           // LIMIT $1 OFFSET $2
           expect(values).toEqual([2, 2]); // limit = 2, offset = (2-1)*2 = 2
+          return {
+            rows: [mockMarkets[2], mockMarkets[3]].map((m) => ({ ...m, total_count: 5 })),
+          };
         }
         return sql.includes("COUNT") ? { rows: [{ total: 5 }] } : { rows: [mockMarkets[2], mockMarkets[3]] };
       });
@@ -361,7 +386,7 @@ describe("Integration: GET /api/markets/:id and 404 handling", () => {
     });
 
     expect(response.statusCode).toBe(404);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: {
         code: "NOT_FOUND",
         message: "Market not found",
@@ -379,7 +404,7 @@ describe("Integration: GET /api/markets/:id and 404 handling", () => {
     });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: {
         code: "BAD_REQUEST",
         message: "id must be a positive integer",
@@ -400,5 +425,125 @@ describe("Integration: GET /api/markets/:id and 404 handling", () => {
     expect(response.statusCode).toBe(404);
     expect(response.json().error.code).toBe("NOT_FOUND");
     expect(queryMock).not.toHaveBeenCalled();
+  });
+});
+
+// ── GET /api/markets/:id/odds ────────────────────────────────────────────────
+describe("Integration: GET /api/markets/:id/odds", () => {
+  it("returns derived odds and implied probabilities for existing market", async () => {
+    const market = makeMarketRow({
+      id: 10,
+      total_yes: "100.0000000",
+      total_no: "50.0000000",
+    });
+    const queryMock = vi.fn().mockResolvedValue({ rows: [market] });
+    const server = await buildTestServer({ query: queryMock });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/markets/10/odds",
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body).toEqual({
+      market_id: 10,
+      total_yes: "100.0000000",
+      total_no: "50.0000000",
+      total_pool: "150.0000000",
+      yes_odds: 0.6667,
+      no_odds: 0.3333,
+      implied_probability: {
+        yes: 0.6667,
+        no: 0.3333,
+      },
+    });
+  });
+
+  it("handles zero-pool gracefully with 50/50 implied probability", async () => {
+    const market = makeMarketRow({
+      id: 11,
+      total_yes: "0.0000000",
+      total_no: "0.0000000",
+    });
+    const queryMock = vi.fn().mockResolvedValue({ rows: [market] });
+    const server = await buildTestServer({ query: queryMock });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/markets/11/odds",
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body).toEqual({
+      market_id: 11,
+      total_yes: "0.0000000",
+      total_no: "0.0000000",
+      total_pool: "0.0000000",
+      yes_odds: 0.5,
+      no_odds: 0.5,
+      implied_probability: {
+        yes: 0.5,
+        no: 0.5,
+      },
+    });
+  });
+
+  it("handles amounts exceeding Number.MAX_SAFE_INTEGER without precision loss (Issue #487)", async () => {
+    // Both total_yes and total_no exceed Number.MAX_SAFE_INTEGER
+    const market = makeMarketRow({
+      id: 12,
+      total_yes: "10000000000000000.0000000",
+      total_no: "30000000000000000.0000000",
+    });
+    const queryMock = vi.fn().mockResolvedValue({ rows: [market] });
+    const server = await buildTestServer({ query: queryMock });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/markets/12/odds",
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body).toEqual({
+      market_id: 12,
+      total_yes: "10000000000000000.0000000",
+      total_no: "30000000000000000.0000000",
+      total_pool: "40000000000000000.0000000",
+      yes_odds: 0.25,
+      no_odds: 0.75,
+      implied_probability: {
+        yes: 0.25,
+        no: 0.75,
+      },
+    });
+  });
+
+  it("returns 404 for non-existent market", async () => {
+    const queryMock = vi.fn().mockResolvedValue({ rows: [] });
+    const server = await buildTestServer({ query: queryMock });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/markets/999/odds",
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json().error.code).toBe("NOT_FOUND");
+  });
+
+  it("returns 400 for invalid market ID format", async () => {
+    const queryMock = vi.fn();
+    const server = await buildTestServer({ query: queryMock });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/markets/invalid-id/odds",
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe("BAD_REQUEST");
   });
 });

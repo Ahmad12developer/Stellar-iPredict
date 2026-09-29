@@ -417,12 +417,26 @@ fn test_resolver_can_resolve() {
     let resolver = Address::generate(&t.env);
     t.client.add_resolver(&t.admin, &resolver);
     assert!(t.client.is_resolver(&resolver));
+    assert_eq!(t.client.get_resolvers(), soroban_sdk::vec![&t.env, resolver.clone()]);
 
     advance_time(&t.env, 3601);
     t.client.resolve_market(&resolver, &id, &true);
 
     let market = t.client.get_market(&id);
     assert!(market.resolved);
+}
+
+#[test]
+fn test_resolver_registry_removes_addresses() {
+    let t = setup();
+    let first = Address::generate(&t.env);
+    let second = Address::generate(&t.env);
+    t.client.add_resolver(&t.admin, &first);
+    t.client.add_resolver(&t.admin, &second);
+    t.client.remove_resolver(&t.admin, &first);
+
+    assert_eq!(t.client.get_resolvers(), soroban_sdk::vec![&t.env, second]);
+    assert!(!t.client.is_resolver(&first));
 }
 
 // ── 15. Non-resolver cannot resolve ──────────────────────────────────────────
@@ -1258,7 +1272,7 @@ fn test_reject_submit_on_cancelled_market() {
 // ── 49. Submission below the minimum bond rejected ───────────────────────────
 
 #[test]
-#[should_panic(expected = "Error(Contract, #28)")]
+#[should_panic(expected = "Error(Contract, #27)")]
 fn test_reject_submit_bond_below_minimum() {
     let t = setup();
     let m = expired_market_with_bets(&t);
@@ -1345,7 +1359,7 @@ fn test_challenge_emits_challenged_and_escalated_events() {
 // ── 53. Challenge below the disputer minimum rejected ────────────────────────
 
 #[test]
-#[should_panic(expected = "Error(Contract, #28)")]
+#[should_panic(expected = "Error(Contract, #27)")]
 fn test_reject_challenge_below_disputer_minimum() {
     let t = setup();
     let m = expired_market_with_bets(&t);
@@ -1359,7 +1373,7 @@ fn test_reject_challenge_below_disputer_minimum() {
 // ── 54. Challenge must exceed the submitter's bond, not just the minimum ─────
 
 #[test]
-#[should_panic(expected = "Error(Contract, #28)")]
+#[should_panic(expected = "Error(Contract, #27)")]
 fn test_reject_challenge_not_larger_than_submitter_bond() {
     let t = setup();
     let m = expired_market_with_bets(&t);
@@ -1374,7 +1388,7 @@ fn test_reject_challenge_not_larger_than_submitter_bond() {
 // ── 55. Challenge after the window closes rejected ───────────────────────────
 
 #[test]
-#[should_panic(expected = "Error(Contract, #26)")]
+#[should_panic(expected = "Error(Contract, #25)")]
 fn test_reject_challenge_after_window() {
     let t = setup();
     let m = expired_market_with_bets(&t);
@@ -1512,7 +1526,7 @@ fn test_reject_finalize_escalated_market() {
 // ── 62. Double finalize rejected ─────────────────────────────────────────────
 
 #[test]
-#[should_panic(expected = "Error(Contract, #27)")]
+#[should_panic(expected = "Error(Contract, #26)")]
 fn test_reject_double_finalize() {
     let t = setup();
     let m = expired_market_with_bets(&t);
@@ -1555,8 +1569,8 @@ fn test_council_upholds_submission_bond_math() {
     let expected_protocol_credit = DIS_BOND - DIS_BOND / 2;
 
     advance_time(&t.env, 3600);
-    let finalized_at = t.env.ledger().timestamp();
-    t.client.resolve_challenge(&t.admin, &m.id, &true); // submitter was right
+    let finalized_at = t.client.get_oracle_submission(&m.id).council_deadline;
+    council_ruling(&t, &t.admin, m.id, true); // submitter was right
 
     assert_market_events(&t, vec![&t.env, ev(&t, &OracleFinalizedEvent {
         market_id: m.id,
@@ -1614,8 +1628,8 @@ fn test_council_sides_with_disputer_bond_math() {
     // Council rules NO — the challenger was right
     let council = Address::generate(&t.env);
     t.client.add_resolver(&t.admin, &council);
-    let finalized_at = t.env.ledger().timestamp();
-    t.client.resolve_challenge(&council, &m.id, &false);
+    let finalized_at = t.client.get_oracle_submission(&m.id).council_deadline;
+    council_ruling(&t, &council, m.id, false);
 
     assert_market_events(&t, vec![&t.env, ev(&t, &OracleFinalizedEvent {
         market_id: m.id,
@@ -1666,20 +1680,20 @@ fn test_reject_resolve_challenge_non_resolver() {
 // ── 67. Council cannot rule on a market that was never challenged ────────────
 
 #[test]
-#[should_panic(expected = "Error(Contract, #27)")]
+#[should_panic(expected = "Error(Contract, #26)")]
 fn test_reject_resolve_challenge_when_not_escalated() {
     let t = setup();
     let m = expired_market_with_bets(&t);
     let submitter = funded_user(&t, SUB_BOND);
 
     t.client.submit_outcome(&submitter, &m.id, &true, &SUB_BOND);
-    t.client.resolve_challenge(&t.admin, &m.id, &true);
+    council_ruling(&t, &t.admin, m.id, true);
 }
 
 // ── 68. Council cannot rule twice ────────────────────────────────────────────
 
 #[test]
-#[should_panic(expected = "Error(Contract, #27)")]
+#[should_panic(expected = "Error(Contract, #26)")]
 fn test_reject_double_council_ruling() {
     let t = setup();
     let m = expired_market_with_bets(&t);
@@ -1688,8 +1702,8 @@ fn test_reject_double_council_ruling() {
 
     t.client.submit_outcome(&submitter, &m.id, &true, &SUB_BOND);
     t.client.challenge(&challenger, &m.id, &DIS_BOND);
-    t.client.resolve_challenge(&t.admin, &m.id, &true);
-    t.client.resolve_challenge(&t.admin, &m.id, &false);
+    council_ruling(&t, &t.admin, m.id, true);
+    council_ruling(&t, &t.admin, m.id, false);
 }
 
 // ── 69. Out-of-band resolution still releases an unchallenged bond ───────────
@@ -1760,7 +1774,7 @@ fn test_council_settles_bonds_on_cancelled_market() {
     t.client.cancel_market(&t.admin, &m.id);
 
     // The ruling still runs so the bonds are never stranded in escrow …
-    t.client.resolve_challenge(&t.admin, &m.id, &false);
+    council_ruling(&t, &t.admin, m.id, false);
     assert_eq!(t.xlm.balance(&challenger), DIS_BOND + SUB_BOND - SUB_BOND / 10);
     assert_eq!(t.client.get_oracle_submission(&m.id).state, OracleState::Finalized);
 
@@ -1790,40 +1804,380 @@ fn test_finalize_releases_bond_on_cancelled_market() {
     assert!(!market.resolved);
 }
 
+// ── 74. Bond settlement arithmetic: escrow always nets to zero (submitter wins)
+
 #[test]
-fn test_invariant_random_operations() {
+fn test_bond_arithmetic_submitter_wins_nets_to_zero() {
     let t = setup();
-    let users = [Address::generate(&t.env), Address::generate(&t.env), Address::generate(&t.env)];
-    for u in &users {
-        fund_user(&t, u, 10_000_0000000);
-    }
-    
-    // We don't have rand crate, so we use a simple linear congruential generator
-    let mut state: u64 = 12345;
-    let mut next_rand = || -> u64 {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
-        state
-    };
-    
-    let market_id = create_test_market(&t);
-    
-    for _ in 0..10 {
-        let op = next_rand() % 3;
-        let user_idx = (next_rand() % 3) as usize;
-        let amount = 100_0000000 + (next_rand() % 500_0000000) as i128;
-        let is_yes = (next_rand() % 2) == 0;
-        
-        match op {
-            0 => {
-                let _ = t.client.try_place_bet(&users[user_idx], &market_id, &is_yes, &amount);
-            },
-            1 => {
-                let _ = t.client.try_cancel_market(&t.admin, &market_id);
-            },
-            2 => {
-                let _ = t.client.try_resolve_market(&t.admin, &market_id, &is_yes);
-            },
-            _ => {}
+    let m = expired_market_with_bets(&t);
+    let submitter = funded_user(&t, 100_0000000);
+    let challenger = funded_user(&t, 250_0000000);
+
+    t.client.submit_outcome(&submitter, &m.id, &true, &100_0000000);
+    t.client.challenge(&challenger, &m.id, &250_0000000);
+
+    let fees_before = t.client.get_accumulated_fees();
+    council_ruling(&t, &t.admin, m.id, true);
+    let fees_after = t.client.get_accumulated_fees();
+
+    let submitter_payout = t.xlm.balance(&submitter);
+    let challenger_payout = t.xlm.balance(&challenger);
+    let protocol_credit = fees_after - fees_before;
+
+    // Escrow nets to zero: submitter gets their bond + half of challenger bond
+    // Remainder goes to protocol fees (including 10% council fee)
+    assert_eq!(
+        submitter_payout + challenger_payout + protocol_credit,
+        100_0000000 + 250_0000000
+    );
+}
+
+// ── 75. Bond settlement arithmetic: escrow always nets to zero (disputer wins)
+
+#[test]
+fn test_bond_arithmetic_disputer_wins_nets_to_zero() {
+    let t = setup();
+    let m = expired_market_with_bets(&t);
+    let submitter = funded_user(&t, 150_0000000);
+    let challenger = funded_user(&t, 300_0000000);
+
+    t.client.submit_outcome(&submitter, &m.id, &false, &150_0000000);
+    t.client.challenge(&challenger, &m.id, &300_0000000);
+
+    let fees_before = t.client.get_accumulated_fees();
+    council_ruling(&t, &t.admin, m.id, true);
+    let fees_after = t.client.get_accumulated_fees();
+
+    let submitter_payout = t.xlm.balance(&submitter);
+    let challenger_payout = t.xlm.balance(&challenger);
+    let protocol_credit = fees_after - fees_before;
+
+    // Escrow nets to zero: disputer gets both bonds minus 10% council fee on loser bond
+    assert_eq!(
+        submitter_payout + challenger_payout + protocol_credit,
+        150_0000000 + 300_0000000
+    );
+}
+
+// ── 76. Bond settlement: boundary case with minimal bonds
+
+#[test]
+fn test_bond_arithmetic_minimal_bonds() {
+    let t = setup();
+    let m = expired_market_with_bets(&t);
+    let submitter = funded_user(&t, 100_0000000);
+    let challenger = funded_user(&t, 200_0000000);
+
+    t.client.submit_outcome(&submitter, &m.id, &true, &100_0000000);
+    t.client.challenge(&challenger, &m.id, &200_0000000);
+
+    let fees_before = t.client.get_accumulated_fees();
+    council_ruling(&t, &t.admin, m.id, true);
+    let fees_after = t.client.get_accumulated_fees();
+
+    let submitter_payout = t.xlm.balance(&submitter);
+    let challenger_payout = t.xlm.balance(&challenger);
+    let protocol_credit = fees_after - fees_before;
+
+    assert_eq!(
+        submitter_payout + challenger_payout + protocol_credit,
+        100_0000000 + 200_0000000
+    );
+}
+
+// ── 77. Bond settlement: boundary case with large bonds
+
+#[test]
+fn test_bond_arithmetic_large_bonds() {
+    let t = setup();
+    let m = expired_market_with_bets(&t);
+    let submitter = funded_user(&t, 10_000_0000000);
+    let challenger = funded_user(&t, 25_000_0000000);
+
+    t.client.submit_outcome(&submitter, &m.id, &false, &10_000_0000000);
+    t.client.challenge(&challenger, &m.id, &25_000_0000000);
+
+    let fees_before = t.client.get_accumulated_fees();
+    council_ruling(&t, &t.admin, m.id, false);
+    let fees_after = t.client.get_accumulated_fees();
+
+    let submitter_payout = t.xlm.balance(&submitter);
+    let challenger_payout = t.xlm.balance(&challenger);
+    let protocol_credit = fees_after - fees_before;
+
+    assert_eq!(
+        submitter_payout + challenger_payout + protocol_credit,
+        10_000_0000000 + 25_000_0000000
+    );
+}
+
+// ── 78. Bond settlement: bonds differing by one stroops
+
+#[test]
+fn test_bond_arithmetic_unit_difference() {
+    let t = setup();
+    t.client.set_bond_minimums(&t.admin, &100_0000000, &100_0000001);
+    let m = expired_market_with_bets(&t);
+    let submitter = funded_user(&t, 100_0000000);
+    let challenger = funded_user(&t, 100_0000001);
+
+    t.client.submit_outcome(&submitter, &m.id, &true, &100_0000000);
+    t.client.challenge(&challenger, &m.id, &100_0000001);
+
+    let fees_before = t.client.get_accumulated_fees();
+    council_ruling(&t, &t.admin, m.id, true);
+    let fees_after = t.client.get_accumulated_fees();
+
+    let submitter_payout = t.xlm.balance(&submitter);
+    let challenger_payout = t.xlm.balance(&challenger);
+    let protocol_credit = fees_after - fees_before;
+
+    assert_eq!(
+        submitter_payout + challenger_payout + protocol_credit,
+        100_0000000 + 100_0000001
+    );
+}
+
+// ── 79. Council fee calculation is consistent and documented
+
+#[test]
+fn test_council_fee_calculation_is_10_percent() {
+    let t = setup();
+    let m = expired_market_with_bets(&t);
+    let submitter = funded_user(&t, 1_000_0000000);
+    let challenger = funded_user(&t, 2_000_0000000);
+
+    t.client.submit_outcome(&submitter, &m.id, &true, &1_000_0000000);
+    t.client.challenge(&challenger, &m.id, &2_000_0000000);
+
+    let fees_before = t.client.get_accumulated_fees();
+    council_ruling(&t, &t.admin, m.id, false);
+
+    let fees = t.client.get_accumulated_fees() - fees_before;
+    // Council fee on loser (submitter) bond: 10% of 1_000_0000000 = 100_0000000
+    assert_eq!(fees, 100_0000000);
+}
+
+// ── 80. Concurrent operations: submission and challenge in same ledger
+
+#[test]
+fn test_concurrent_submission_and_challenge_same_ledger() {
+    let t = setup();
+    let m = expired_market_with_bets(&t);
+    let submitter = funded_user(&t, SUB_BOND);
+    let challenger = funded_user(&t, DIS_BOND);
+
+    // Both submit in the "same" logical moment (no time advance)
+    t.client.submit_outcome(&submitter, &m.id, &true, &SUB_BOND);
+    t.client.challenge(&challenger, &m.id, &DIS_BOND);
+
+    let submission = t.client.get_oracle_submission(&m.id);
+    assert_eq!(submission.state, OracleState::Escalated);
+    assert_eq!(submission.challenger, Some(challenger.clone()));
+
+    // Market should escalate correctly
+    council_ruling(&t, &t.admin, m.id, true);
+    assert_eq!(t.xlm.balance(&submitter), SUB_BOND + DIS_BOND / 2);
+}
+
+// ── 81. Concurrent operations: submission then immediate challenge
+
+#[test]
+fn test_concurrent_submission_then_immediate_challenge() {
+    let t = setup();
+    let m = expired_market_with_bets(&t);
+    let submitter = funded_user(&t, SUB_BOND);
+    let challenger = funded_user(&t, DIS_BOND);
+
+    t.client.submit_outcome(&submitter, &m.id, &true, &SUB_BOND);
+    advance_time(&t.env, 1); // minimal time advance
+    t.client.challenge(&challenger, &m.id, &DIS_BOND);
+
+    let submission = t.client.get_oracle_submission(&m.id);
+    assert_eq!(submission.state, OracleState::Escalated);
+}
+
+// ── 82. Concurrent operations: market cancellation during submission window
+
+#[test]
+fn test_market_cancellation_during_submission_window() {
+    let t = setup();
+    let m = expired_market_with_bets(&t);
+    let submitter = funded_user(&t, SUB_BOND);
+
+    t.client.submit_outcome(&submitter, &m.id, &true, &SUB_BOND);
+    advance_time(&t.env, 1);
+    t.client.cancel_market(&t.admin, &m.id);
+
+    let submission = t.client.get_oracle_submission(&m.id);
+    assert_eq!(submission.state, OracleState::Submitted);
+
+    // Bonds must still be released
+    advance_time(&t.env, CHALLENGE_WINDOW_SECS);
+    t.client.finalize_outcome(&m.id);
+    assert_eq!(t.xlm.balance(&submitter), SUB_BOND);
+}
+
+// ── 83. Concurrent operations: market resolution during escalation
+
+#[test]
+fn test_market_force_resolution_during_escalation() {
+    let t = setup();
+    let m = expired_market_with_bets(&t);
+    let submitter = funded_user(&t, SUB_BOND);
+    let challenger = funded_user(&t, DIS_BOND);
+
+    t.client.submit_outcome(&submitter, &m.id, &true, &SUB_BOND);
+    t.client.challenge(&challenger, &m.id, &DIS_BOND);
+
+    // Admin force-resolves out-of-band during escalation
+    t.client.resolve_market(&t.admin, &m.id, &false);
+
+    // Council can still settle bonds (market remains unresolved in oracle storage)
+    council_ruling(&t, &t.admin, m.id, true);
+
+    // Market state is not updated by oracle (already resolved)
+    assert_eq!(t.client.get_market(&m.id).outcome, false);
+
+    // But bonds are still properly distributed
+    let challenger_payout = t.xlm.balance(&challenger);
+    assert!(challenger_payout == 0); // disputer loses
+}
+
+#[test]
+fn test_cancel_unsubmitted_market_success() {
+    let t = setup();
+    let id = create_test_market(&t);
+    let alice = Address::generate(&t.env);
+    let bob = Address::generate(&t.env);
+    fund_user(&t, &alice, 200_0000000);
+    fund_user(&t, &bob, 200_0000000);
+
+    t.client.place_bet(&alice, &id, &true, &100_0000000);
+    t.client.place_bet(&bob, &id, &false, &50_0000000);
+
+    let market = t.client.get_market(&id);
+    let expiry = market.end_time;
+
+    t.env.ledger().set(LedgerInfo {
+        timestamp: expiry + 604_800 + 1,
+        protocol_version: 26,
+        sequence_number: t.env.ledger().sequence() + 1,
+        network_id: [0; 32],
+        base_reserve: 100,
+        min_temp_entry_ttl: 16,
+        min_persistent_entry_ttl: 2592000,
+        max_entry_ttl: 6_312_000,
+    });
+
+    t.client.cancel_unsubmitted_market(&id);
+
+    let cancelled_market = t.client.get_market(&id);
+    assert!(cancelled_market.cancelled);
+
+    let alice_before = t.xlm.balance(&alice);
+    let bob_before = t.xlm.balance(&bob);
+
+    let alice_refund = t.client.cancel_refund(&alice, &id);
+    assert_eq!(alice_refund, 100_0000000);
+
+    let bob_refund = t.client.cancel_refund(&bob, &id);
+    assert_eq!(bob_refund, 50_0000000);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn test_cancel_unsubmitted_market_rejected_before_expiry() {
+    let t = setup();
+    let id = create_test_market(&t);
+
+    let market = t.client.get_market(&id);
+    let expiry = market.end_time;
+
+    t.env.ledger().set(LedgerInfo {
+        timestamp: expiry - 1,
+        protocol_version: 26,
+        sequence_number: t.env.ledger().sequence() + 1,
+        network_id: [0; 32],
+        base_reserve: 100,
+        min_temp_entry_ttl: 16,
+        min_persistent_entry_ttl: 2592000,
+        max_entry_ttl: 6_312_000,
+    });
+
+    t.client.cancel_unsubmitted_market(&id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #21)")]
+fn test_cancel_unsubmitted_market_rejected_with_submission() {
+    let t = setup();
+    let id = create_test_market(&t);
+    let submitter = Address::generate(&t.env);
+    fund_user(&t, &submitter, 500_0000000);
+
+    let market = t.client.get_market(&id);
+    let expiry = market.end_time;
+
+    t.env.ledger().set(LedgerInfo {
+        timestamp: expiry + 1,
+        protocol_version: 26,
+        sequence_number: t.env.ledger().sequence() + 1,
+        network_id: [0; 32],
+        base_reserve: 100,
+        min_temp_entry_ttl: 16,
+        min_persistent_entry_ttl: 2592000,
+        max_entry_ttl: 6_312_000,
+    });
+
+    t.client.submit_outcome(&submitter, &id, &true, &100_0000000);
+
+    t.env.ledger().set(LedgerInfo {
+        timestamp: expiry + 604_800 + 1,
+        protocol_version: 26,
+        sequence_number: t.env.ledger().sequence() + 1,
+        network_id: [0; 32],
+        base_reserve: 100,
+        min_temp_entry_ttl: 16,
+        min_persistent_entry_ttl: 2592000,
+        max_entry_ttl: 6_312_000,
+    });
+
+    t.client.cancel_unsubmitted_market(&id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #24)")]
+fn test_cancel_unsubmitted_market_rejected_before_deadline() {
+    let t = setup();
+    let id = create_test_market(&t);
+
+    let market = t.client.get_market(&id);
+    let expiry = market.end_time;
+
+    t.env.ledger().set(LedgerInfo {
+        timestamp: expiry + 604_800 - 1,
+        protocol_version: 26,
+        sequence_number: t.env.ledger().sequence() + 1,
+        network_id: [0; 32],
+        base_reserve: 100,
+        min_temp_entry_ttl: 16,
+        min_persistent_entry_ttl: 2592000,
+        max_entry_ttl: 6_312_000,
+    });
+
+    t.client.cancel_unsubmitted_market(&id);
+}
+
+// Settlement fixtures must satisfy the current council vote and deadline requirements.
+fn council_ruling(t: &TestSetup, caller: &Address, market_id: u64, outcome: bool) {
+    let submission = t.client.get_oracle_submission(&market_id);
+    if submission.state == OracleState::Escalated {
+        t.client.vote_on_challenge(caller, &market_id, &outcome);
+        let now = t.env.ledger().timestamp();
+        if now < submission.council_deadline {
+            advance_time(&t.env, submission.council_deadline - now);
         }
     }
+    t.client.resolve_challenge(caller, &market_id, &outcome);
 }

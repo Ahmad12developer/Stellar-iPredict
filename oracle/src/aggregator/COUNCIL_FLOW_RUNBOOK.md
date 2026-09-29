@@ -1,5 +1,9 @@
 # Council Flow Runbook
 
+> **Responding to an `oracle.monitor.market_stuck` alert?** Start with the
+> [Stuck Market Runbook](../../docs/STUCK_MARKET_RUNBOOK.md). It is checked against the current code
+> and maps which runbook covers what. This file covers exercising the council flow by hand on a local or testnet contract, not production.
+
 This runbook documents how to exercise the council resolution flow manually when a local/testnet contract environment is available.
 
 ## Prerequisites
@@ -66,6 +70,23 @@ To exercise manually:
 2. Finalize a market (steps above) and confirm exactly one `market_finalized`
    payload / log line appears.
 3. Re-run finalization for the same market and confirm no second notification.
+
+## Handling Escalated Disputes Exceeding the Council Window
+
+If a dispute remains in the `escalated` state for more than 72 hours (`COUNCIL_WINDOW`), the council has failed to rule in time. The `checkCouncilWindowExceeded` monitor will detect this.
+
+To resolve a timed-out market manually:
+
+1. Identify the market ID using the alerts from `checkCouncilWindowExceeded` or query the DB:
+   ```sql
+   SELECT market_id, submitted_at FROM oracle_submissions
+   WHERE status = 'escalated' AND now() - submitted_at > interval '72 hours';
+   ```
+2. Determine the fallback outcome (e.g., cancel the market, or rule in favor of a specific outcome).
+3. Use the `resolve_market` command or script with the admin/resolver key to force-resolve it on-chain:
+   - Call `resolve_market(resolver, market_id, fallback_outcome)`.
+4. Run the finalizer to persist the decision:
+   - This settles the bonds based on the fallback outcome.
 
 ## Exporting the council audit
 

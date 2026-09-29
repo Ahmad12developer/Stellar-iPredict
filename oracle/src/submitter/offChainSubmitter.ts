@@ -15,6 +15,21 @@ export interface OffChainSubmitterOptions {
   dryRun?: boolean;
 }
 
+/**
+ * Validates that a market ID has the expected format (starts with "M-" and is non-empty).
+ * Returns the trimmed market ID or throws if invalid.
+ */
+function validateMarketId(marketId: string): string {
+  const trimmed = marketId.trim();
+  if (!trimmed) {
+    throw new Error("marketId is required");
+  }
+  if (!/^M-[A-Z0-9]{50}$/.test(trimmed)) {
+    throw new Error(`Invalid market ID format: ${trimmed}`);
+  }
+  return trimmed;
+}
+
 export interface SubmittedOutcomeResult {
   marketId: string;
   outcome: boolean;
@@ -41,7 +56,7 @@ export class OffChainSubmitterService {
   }
 
   async processMarket(marketId: string): Promise<SubmittedOutcomeResult | null> {
-    const trimmedId = marketId.trim();
+    const trimmedId = validateMarketId(marketId);
     if (!trimmedId) throw new Error("marketId is required");
 
     // Prevent double-submit / double-payout path
@@ -106,11 +121,22 @@ export class OffChainSubmitterService {
     const sourceAccount = await server.getAccount(caller);
     const contract = new Contract(contractId);
 
+    // On-chain Replay Protection
+    const checkTx = new TransactionBuilder(sourceAccount, { fee: "100", networkPassphrase })
+      .addOperation(contract.call("get_oracle_submission", nativeToScVal(BigInt(marketId), { type: "u64" })))
+      .setTimeout(30)
+      .build();
+
+    const simResponse = await server.simulateTransaction(checkTx);
+    if (!rpc.Api.isSimulationError(simResponse) && simResponse.result) {
+      throw new Error(`Submission already exists on-chain for market ${marketId}`);
+    }
+
     const operation = contract.call(
       "submit_outcome",
       new Address(caller).toScVal(),
       nativeToScVal(BigInt(marketId), { type: "u64" }),
-      nativeToScVal(outcome, { type: "bool" }),
+      nativeToScVal(outcome),
       nativeToScVal(bond, { type: "i128" }),
     );
 
